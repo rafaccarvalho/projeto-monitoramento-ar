@@ -1,0 +1,92 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <DHTesp.h>
+#include <ArduinoJson.h>
+
+// WiFi
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+// HiveMQ Cloud
+const char* mqtt_server = "clusternome-4c6b47d2.a01.euc1.aws.hivemq.cloud";
+const int   mqtt_port   = 1883; // Tente 1883 primeiro (é mais estável no Wokwi)
+const char* mqtt_user   = "rafaccarvalho";
+const char* mqtt_pass   = "Objetos1";
+
+// Tópicos
+const char* topic_pub = "escola/sala203/dados";
+const char* topic_sub = "escola/sala203/atuador";
+
+// Pinos
+#define DHT_PIN     15
+#define LED_R       25
+#define LED_G       26
+#define LED_B       27
+#define BUZZER_PIN  14
+#define MQ135_PIN   34
+
+DHTesp dht;
+WiFiClient espClient; // Usando WiFiClient simples para evitar erros de biblioteca
+PubSubClient client(espClient);
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+  for (int i = 0; i < length; i++) msg += (char)payload[i];
+  
+  if (msg == "CRITICO") {
+    digitalWrite(BUZZER_PIN, HIGH);
+    analogWrite(LED_R, 255); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
+  } else if (msg == "ATENCAO") {
+    digitalWrite(BUZZER_PIN, LOW);
+    analogWrite(LED_R, 255); analogWrite(LED_G, 165); analogWrite(LED_B, 0);
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+    analogWrite(LED_R, 0); analogWrite(LED_G, 255); analogWrite(LED_B, 0);
+  }
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    if (client.connect("ESP32_Sala203", mqtt_user, mqtt_pass)) {
+      client.subscribe(topic_sub);
+    } else {
+      delay(3000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.setup(DHT_PIN, DHTesp::DHT22);
+  
+  pinMode(LED_R, OUTPUT); pinMode(LED_G, OUTPUT); pinMode(LED_B, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  TempAndHumidity data = dht.getTempAndHumidity();
+  int mq135Raw = analogRead(MQ135_PIN);
+  int co2ppm = map(mq135Raw, 0, 4095, 400, 3000);
+
+  StaticJsonDocument<200> doc;
+  doc["sala"]      = "Sala 203";
+  doc["temp"]      = data.temperature;
+  doc["umidade"]   = data.humidity;
+  doc["co2"]       = co2ppm;
+  doc["timestamp"] = millis();
+
+  char buffer[256];
+  serializeJson(doc, buffer);
+  client.publish(topic_pub, buffer);
+
+  delay(5000);
+}
